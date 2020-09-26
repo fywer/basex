@@ -1,0 +1,10 @@
+### IntelliJ IDEA ###
+.idea
+### Visual Code ###
+.vscode
+### VirtualEnv ###
+/venv
+
+### Cache Python ###
+/chat/__pycache__
+/client/__pycache__
