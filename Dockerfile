@@ -1,6 +1,15 @@
-FROM python:3.8
-WORKDIR /basex
-COPY requeriments.txt
-RUN pip install -r requeriments.txt
-COPY /src
-CMD ["python", "./main.py"] 
+FROM python:3.12-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+ENV PYTHONPATH=.
+
+EXPOSE 8080
+
+CMD ["python", "main.py", "server"]

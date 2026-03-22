@@ -1,133 +1,174 @@
-from threading import Thread
-from threading import Lock
+"""
+Módulo que define la clase Proceso.
+
+Un Proceso representa la conexión activa de un cliente en el servidor.
+Se ejecuta como un hilo (Thread) que escucha mensajes del cliente
+y los procesa (broadcast, comandos del sistema, etc.).
+"""
+
+from threading import Thread, Lock
 import subprocess
-import time
-import json
 import sys
 
-ahora = lambda: time.ctime().split(' ')[3]
-hoy = lambda items=time.ctime().split(' '): "{0}/{1}/{2}".format(items[1], items[2], items[4])
+# Tiempo máximo de ejecución de un comando (en segundos)
+COMMAND_TIMEOUT = 10
+
+from utils import ahora, hoy
+
 
 class Proceso(Thread):
-    servidor = None
-    mutex = Lock()
-    def __init__(self, servidor, cliente, uid):
-        '''Asocia un objeto socket al proceso,
-		genera su identificador en función de la cantidad de procesos activos,
-		almacena la fecha y hora en el momento que se crea el proceso y activa su estado a verdadero.
+    """
+    Representa un cliente conectado al servidor.
 
-		Argumentos/parámetros
-		cliente - - Objeto tipo socket del cliente
-		retorna: None
-		'''
-        Thread.__init__(self)
+    Hereda de Thread para ejecutarse en su propio hilo.
+    Escucha mensajes del cliente, ejecuta comandos y
+    difunde los resultados vía broadcast.
+
+    Attributes:
+        servidor: Instancia de Servidor que gestiona este proceso.
+        _cliente: Socket del cliente conectado.
+        id: Identificador único del proceso.
+        fecha: Fecha de creación del proceso.
+        tiempo: Hora de creación del proceso.
+        _status: Estado activo/inactivo del proceso.
+        _nickname: Apodo del usuario conectado.
+    """
+
+    def __init__(self, servidor, cliente, uid):
+        """
+        Inicializa el proceso con su servidor, socket de cliente e ID.
+
+        Args:
+            servidor: Instancia de Servidor que gestiona este proceso.
+            cliente: Objeto socket del cliente.
+            uid: Identificador único del proceso.
+        """
+        super().__init__()
         self.servidor = servidor
-        self.cliente = cliente
+        self._cliente = cliente
         self.id = uid
         self.fecha = hoy()
         self.tiempo = ahora()
-        self.status = True
-        self.nickname = "@"
+        self._status = True
+        self._nickname = "@"
+        self._mutex = Lock()
 
     def __repr__(self):
+        """Retorna representación JSON del proceso."""
+        import json
         p = {
             "id": self.id,
-            "nickname": self.nickname,
+            "nickname": self._nickname,
             "fecha": self.fecha,
             "tiempo": self.tiempo,
-            "estado": self.status
+            "estado": self._status
         }
         return json.dumps(p)
 
-    def getId(self):
-        '''Devuelve el id del proceso.
+    @property
+    def status(self):
+        """Estado activo/inactivo del proceso."""
+        return self._status
 
-        Argumentos/parámetros
-		retorna: int
-		'''
-        return self.id
+    @status.setter
+    def status(self, value):
+        self._status = value
 
-    def getStatus(self):
-        '''Devuelve el estado del proceso.
+    @property
+    def nickname(self):
+        """Apodo del usuario conectado."""
+        return self._nickname
 
-		Argumentos/parámetros
-		retorna: bool
-		'''
-        return self.status
+    @nickname.setter
+    def nickname(self, value):
+        self._nickname = value
 
-    def getNickname(self):
-        '''Devuelve el nombre del proceso.
+    @property
+    def cliente(self):
+        """Socket del cliente conectado."""
+        return self._cliente
 
-		Argumentos/parámetros
-		retorna: str
-		'''
-        return self.nickname
-
-    def setNickname(self, nickname):
-        '''
-		'''
-        self.nickname = nickname
-
-    def setStatus(self, status):
-        '''
-        '''
-        self.status = status
-
-    def getCliente(self):
-        '''
-
-		Argumentos/parámetros
-		retorna: socket.socket
-		'''
-        return self.cliente
-
-    def getServidor(self):
-        '''
-        '''
-        return self.servidor
-    
     def run(self):
-        ''' Recupera mensajes del cliente,
-		si el mensaje es igual a "#users" desplegará los usuarios en estado activo
-		el servidor restructura el mensaje y ejecuta la función broadcast.
-		Argumentos/parámetros
-		retorna: None
-		'''
+        """
+        Bucle principal del proceso.
+
+        Escucha mensajes del cliente y los procesa:
+        - 'quit': Desconecta al cliente.
+        - '#users': Muestra usuarios activos.
+        - '#login': Muestra usuario del sistema.
+        - Cualquier otro texto: Se ejecuta como comando del sistema
+          y el resultado se difunde vía broadcast.
+        """
         try:
-            self.getServidor().broadcast(self.getCliente(), " ^.^ Se ha conectado... {0} ".format(self.getNickname()))
+            self.servidor.broadcast(
+                self._cliente,
+                " ^.^ Se ha conectado... {0} ".format(self._nickname)
+            )
         except Exception as e:
             sys.stderr.write("ERROR: {}\n".format(e))
             return
 
         while True:
             try:
-                mensaje = self.getCliente().recv(512).decode('ISO-8859-1').strip()
-                if mensaje == "quit":
-                    self.getCliente().send("close".encode())
-                    self.getServidor().quit(self)
+                data = self._cliente.recv(512)
+                if not data:
+                    self.servidor.quit(self)
                     break
-                    # De no usar el break lanza el error OSError
+
+                mensaje = data.decode('ISO-8859-1').strip()
+
+                if mensaje == "quit":
+                    self._cliente.send("close".encode('ISO-8859-1'))
+                    self.servidor.quit(self)
+                    break
+
                 if mensaje == "#users":
-                    self.getServidor().users(self.getCliente())
-                    pass 
+                    self.servidor.users(self._cliente)
+                    continue
+
                 if mensaje == "#login":
-                    self.getServidor().login(self.getCliente())
-                    pass
-                else:
-                    comandos = mensaje.split(" ")
-                    response = subprocess.run(comandos, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
-                    #self.mutex.acquire()
-                    if not len(response.stdout) <= 0:
-                        output = "\n@{0}: {1}\n".format(self.getNickname(), response.stdout.decode('ISO-8859-1'))
-                        self.getServidor().broadcast(self.getCliente(), output)
-                    elif not len(response.stderr) <= 0:
-                        output = "\n@{0}: Error: {1}\n".format(self.getNickname(), response.stderr.decode('ISO-8859-1'))
-                        self.getServidor().broadcast(self.getCliente(), output)
+                    self.servidor.login(self._cliente)
+                    continue
+
+                # Ejecutar comando del sistema con timeout
+                try:
+                    response = subprocess.run(
+                        mensaje,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        shell=True,
+                        timeout=COMMAND_TIMEOUT
+                    )
+                    stdout = response.stdout
+                    stderr = response.stderr
+                except subprocess.TimeoutExpired as te:
+                    # Capturar salida parcial del proceso que excedió el timeout
+                    stdout = te.stdout or b''
+                    stderr = te.stderr or b''
+                    if not stdout and not stderr:
+                        stderr = "Timeout: el comando excedió {} segundos.\n".format(
+                            COMMAND_TIMEOUT
+                        ).encode('ISO-8859-1')
+
+                with self._mutex:
+                    if len(stdout) > 0:
+                        output = "\n@{0}: {1}\n".format(
+                            self._nickname,
+                            stdout.decode('ISO-8859-1', errors='ignore')
+                        )
+                    elif len(stderr) > 0:
+                        output = "\n@{0}: Error: {1}\n".format(
+                            self._nickname,
+                            stderr.decode('ISO-8859-1', errors='ignore')
+                        )
                     else:
-                        output = "\n@{0}: {1}\n".format(self.getNickname(), "Advertencia: No se ha encontrado la salida estandar.\n")
-                        self.getServidor().broadcast(self.getCliente(), output)
-                    #self.mutex.release()
+                        output = "\n@{0}: {1}\n".format(
+                            self._nickname,
+                            "Advertencia: No se ha encontrado la salida estandar.\n"
+                        )
+                    self.servidor.broadcast(self._cliente, output)
+
             except Exception as e:
-                sys.stderr.write("ERROR: {}\n".format(e))
+                sys.stderr.write("ERROR RUN: {}\n".format(e))
+                self.servidor.quit(self)
                 break
-                #self.servidor.quit(self)
